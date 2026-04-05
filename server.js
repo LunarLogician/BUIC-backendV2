@@ -13,14 +13,20 @@ const webhookRoutes = require('./routes/webhook');
 
 // ── Firebase Admin ────────────────────────────────────────────────────────
 if (!admin.apps.length) {
-  const fs = require('fs');
-  const serviceAccountPath = path.join(__dirname, 'serviceAccountKey.json');
-  if (fs.existsSync(serviceAccountPath)) {
-    admin.initializeApp({
-      credential: admin.credential.cert(require(serviceAccountPath)),
-    });
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    // Vercel: pass the service account JSON as an environment variable
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   } else {
-    admin.initializeApp({ credential: admin.credential.applicationDefault() });
+    const fs = require('fs');
+    const serviceAccountPath = path.join(__dirname, 'serviceAccountKey.json');
+    if (fs.existsSync(serviceAccountPath)) {
+      admin.initializeApp({
+        credential: admin.credential.cert(require(serviceAccountPath)),
+      });
+    } else {
+      admin.initializeApp({ credential: admin.credential.applicationDefault() });
+    }
   }
 }
 const db = admin.firestore();
