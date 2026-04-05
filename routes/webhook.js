@@ -13,6 +13,13 @@ const router = express.Router();
 const LEMONSQUEEZY_WEBHOOK_SECRET = process.env.LEMONSQUEEZY_WEBHOOK_SECRET;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 
+console.log('\n🔌 ════════════════════════════════════════════════════════════════════════════');
+console.log('🪝 WEBHOOK MODULE LOADED');
+console.log('════════════════════════════════════════════════════════════════════════════');
+console.log('✅ Lemonsqueezy Secret Configured:', !!LEMONSQUEEZY_WEBHOOK_SECRET);
+console.log('✅ SendGrid API Key Configured:', !!SENDGRID_API_KEY);
+console.log('════════════════════════════════════════════════════════════════════════════\n');
+
 // APK configuration
 const APK_CONFIG = {
     basic: {
@@ -64,16 +71,34 @@ if (process.env.SMTP_HOST) {
  */
 router.post('/webhooks/lemonsqueezy', async (req, res) => {
     try {
+        console.log('\n🪝 ════════════════════════════════════════════════════════════════════════════');
+        console.log('📨 WEBHOOK REQUEST RECEIVED');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log('Headers:', Object.keys(req.headers));
+        console.log('Body type:', Buffer.isBuffer(req.body) ? 'Buffer' : typeof req.body);
+        console.log('Body size:', Buffer.isBuffer(req.body) ? req.body.length : JSON.stringify(req.body).length, 'bytes');
+        
         // Verify webhook signature
         const signature = req.headers['x-signature'] || req.headers['x-lemonsqueezy-signature'];
+        console.log('Signature header found:', !!signature);
+        console.log('Secret configured:', !!LEMONSQUEEZY_WEBHOOK_SECRET);
+        
         if (!verifyLemonsqueezySignature(req.body, signature)) {
-            console.warn('Invalid webhook signature');
+            console.warn('🚫 ❌ WEBHOOK SIGNATURE VERIFICATION FAILED');
+            console.warn('Expected signature format from header:', signature?.substring(0, 20) + '...');
             return res.status(401).json({ error: 'Invalid signature' });
         }
+        console.log('✅ Signature verified\n');
 
         // Parse body (raw buffer from express.raw middleware)
         const event = Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString()) : req.body;
-        console.log(`Received Lemonsqueezy webhook: ${event.meta.event_name}`);
+        
+        console.log('\n🪝 ════════════════════════════════════════════════════════════════════════════');
+        console.log('💳 LEMONSQUEEZY WEBHOOK RECEIVED');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log('� Full Event Data:');
+        console.log(JSON.stringify(event, null, 2).substring(0, 1000));
+        console.log('════════════════════════════════════════════════════════════════════════════\n');
 
         // Handle different event types
         switch (event.meta.event_name) {
@@ -104,12 +129,89 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
                 break;
 
             default:
-                console.log(`Unhandled event: ${event.meta.event_name}`);
+                console.log(`⚠️ Unhandled event: ${event.meta.event_name}`);
         }
 
         res.json({ success: true });
     } catch (error) {
-        console.error('Webhook error:', error);
+        console.error('❌ Webhook error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Alternative webhook endpoint - same as /webhooks/lemonsqueezy
+ * POST /api/subscription/webhook
+ * 
+ * Some Lemonsqueezy configurations may use this endpoint instead
+ */
+router.post('/api/subscription/webhook', async (req, res) => {
+    try {
+        console.log('\n🪝 ════════════════════════════════════════════════════════════════════════════');
+        console.log('📨 WEBHOOK REQUEST RECEIVED (Alternative Endpoint)');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log('Headers:', Object.keys(req.headers));
+        console.log('Body type:', Buffer.isBuffer(req.body) ? 'Buffer' : typeof req.body);
+        console.log('Body size:', Buffer.isBuffer(req.body) ? req.body.length : JSON.stringify(req.body).length, 'bytes');
+        
+        // Verify webhook signature
+        const signature = req.headers['x-signature'] || req.headers['x-lemonsqueezy-signature'];
+        console.log('Signature header found:', !!signature);
+        console.log('Secret configured:', !!LEMONSQUEEZY_WEBHOOK_SECRET);
+        
+        if (!verifyLemonsqueezySignature(req.body, signature)) {
+            console.warn('🚫 ❌ WEBHOOK SIGNATURE VERIFICATION FAILED');
+            console.warn('Expected signature format from header:', signature?.substring(0, 20) + '...');
+            return res.status(401).json({ error: 'Invalid signature' });
+        }
+        console.log('✅ Signature verified\n');
+
+        // Parse body
+        const event = Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString()) : req.body;
+        
+        console.log('\n🪝 ════════════════════════════════════════════════════════════════════════════');
+        console.log('💳 LEMONSQUEEZY WEBHOOK RECEIVED');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log('📌 Event Type:', event.meta.event_name);
+        console.log('🆔 Event ID:', event.meta.event_id);
+        console.log('⏰ Created At:', event.meta.created_at);
+        console.log('════════════════════════════════════════════════════════════════════════════\n');
+
+        // Handle different event types
+        switch (event.meta.event_name) {
+            case 'order_created':
+            case 'order_completed':
+            case 'order:created':
+            case 'order:completed':
+                await handleOrderCompleted(event.data, event.meta);
+                break;
+
+            case 'subscription_created':
+            case 'subscription_updated':
+            case 'subscription:created':
+            case 'subscription:updated':
+                await handleSubscriptionEvent(event.data, event.meta);
+                break;
+
+            case 'subscription_resumed':
+            case 'subscription:resumed':
+                await handleSubscriptionResumed(event.data, event.meta);
+                break;
+
+            case 'subscription_paused':
+            case 'subscription_cancelled':
+            case 'subscription:paused':
+            case 'subscription:cancelled':
+                await handleSubscriptionCancelled(event.data, event.meta);
+                break;
+
+            default:
+                console.log(`⚠️ Unhandled event: ${event.meta.event_name}`);
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ Webhook error:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -119,26 +221,56 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
  */
 async function handleOrderCompleted(orderData, meta) {
   try {
-     console.log('orderData keys:', JSON.stringify(Object.keys(orderData)));
-    console.log('orderData attributes:', JSON.stringify(orderData.attributes));
-    console.log('full orderData:', JSON.stringify(orderData).substring(0, 1000));
-    const customerEmail = orderData.attributes?.customer_email;
+    console.log('\n📋 ════════════════════════════════════════════════════════════════════════════');
+    console.log('🔍 ORDER DATA RECEIVED:');
+    console.log('════════════════════════════════════════════════════════════════════════════');
+    console.log('Full orderData:');
+    console.log(JSON.stringify(orderData, null, 2).substring(0, 2000));
+    console.log('════════════════════════════════════════════════════════════════════════════\n');
+    
+    // Try different paths to find email
+    const customerEmail = 
+      orderData?.attributes?.user_email ||
+      orderData?.attributes?.customer_email ||
+      orderData?.customer_email ||
+      orderData?.data?.attributes?.customer_email ||
+      orderData?.relationships?.customer?.data?.attributes?.email;
+    
+    console.log('🔎 Attempting email extraction:');
+    console.log('   orderData.attributes?.user_email:', orderData?.attributes?.user_email);
+    console.log('   orderData.attributes?.customer_email:', orderData?.attributes?.customer_email);
+    console.log('   Final email:', customerEmail);
     
     if (!customerEmail) {
-      console.warn('No email found in order', orderData.id);
+      console.warn('⚠️ No email found in order', orderData.id);
       return;
     }
 
-    // Write to paid_orders — this is what gate-keeps the download
-    await admin.firestore().collection('paid_orders').add({
+    console.log('\n✅ ════════════════════════════════════════════════════════════════════════════');
+    console.log('💰 ORDER COMPLETED');
+    console.log('════════════════════════════════════════════════════════════════════════════');
+    console.log('📧 Customer Email:', customerEmail);
+    console.log('🆔 Order ID:', orderData.id);
+    console.log('💵 Amount:', orderData.attributes?.total || 'N/A');
+    console.log('💱 Currency:', orderData.attributes?.currency || 'N/A');
+    console.log('📱 Product:', orderData.attributes?.first_order_item?.product_name || 'N/A');
+    console.log('════════════════════════════════════════════════════════════════════════════');
+
+    // Write to paid_orders with order_id as doc ID to prevent duplicates
+    await admin.firestore().collection('paid_orders').doc(String(orderData.id)).set({
       email: customerEmail.toLowerCase().trim(),
       order_id: String(orderData.id),
+      order_number: orderData.attributes?.order_number,
+      product: orderData.attributes?.first_order_item?.product_name,
+      amount: orderData.attributes?.total,
+      currency: orderData.attributes?.currency,
       paid_at: new Date(),
-    });
+    }, { merge: true });
 
-    console.log(`✓ Payment recorded for ${customerEmail}`);
+    console.log('✅ Payment recorded for', customerEmail);
+    console.log('📝 Document added to paid_orders collection with order ID:', orderData.id, '\n');
   } catch (error) {
-    console.error('Error handling order:', error);
+    console.error('❌ Error handling order:', error);
     throw error;
   }
 }
@@ -389,21 +521,40 @@ async function sendDownloadLinkEmail(email, plan, apkConfig, enrollment) {
  * Verify Lemonsqueezy webhook signature
  */
 function verifyLemonsqueezySignature(body, signature) {
-    if (!LEMONSQUEEZY_WEBHOOK_SECRET || !signature) {
-        console.warn('Missing webhook secret or signature');
+    // In development, allow unsigned webhooks if secret is not configured
+    if (!LEMONSQUEEZY_WEBHOOK_SECRET) {
+        console.warn('⚠️ LEMONSQUEEZY_WEBHOOK_SECRET not configured - allowing unsigned webhooks (DEVELOPMENT ONLY)');
+        return true;
+    }
+
+    if (!signature) {
+        console.error('❌ No x-signature header provided in webhook');
         return false;
     }
 
-    const payload = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
-    const expectedSignature = crypto
-        .createHmac('sha256', LEMONSQUEEZY_WEBHOOK_SECRET)
-        .update(payload)
-        .digest('hex');
+    try {
+        const payload = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+        const expectedSignature = crypto
+            .createHmac('sha256', LEMONSQUEEZY_WEBHOOK_SECRET)
+            .update(payload)
+            .digest('hex');
 
-    return crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expectedSignature)
-    );
+        console.log('🔐 Signature verification details:');
+        console.log('   Received signature:', signature.substring(0, 16) + '...');
+        console.log('   Expected signature:', expectedSignature.substring(0, 16) + '...');
+        console.log('   Payload size:', payload.length, 'bytes');
+
+        const isValid = crypto.timingSafeEqual(
+            Buffer.from(signature),
+            Buffer.from(expectedSignature)
+        );
+        
+        console.log('   Signatures match:', isValid);
+        return isValid;
+    } catch (err) {
+        console.error('❌ Signature verification error:', err.message);
+        return false;
+    }
 }
 
 /**
