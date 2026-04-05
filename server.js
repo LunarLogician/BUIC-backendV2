@@ -156,8 +156,9 @@ app.post('/api/track-download', async (req, res) => {
         order_id: 'download-form-' + Date.now(),
         paid_at: new Date(),
         expires_at: expiresAt,
+        payment_verified: false, // NOT verified until webhook/payment API confirms
       });
-      console.log(`✓ NEW: Stored email ${normalizedEmail} with device ${device_id}`);
+      console.log(`✓ NEW: Stored email ${normalizedEmail} with device ${device_id} (pending verification)`);
       res.json({ ok: true, download_hash: downloadHash });
     } else {
       // Email already registered
@@ -188,6 +189,7 @@ app.post('/api/track-download', async (req, res) => {
 // ── Get secure APK download URL (device-locked) ──────────────────────────
 // POST /api/get-download-url { email, device_id }
 // Only same device that registered the email can download
+// AND payment must be verified
 app.post('/api/get-download-url', async (req, res) => {
   const { email, device_id } = req.body || {};
   
@@ -214,11 +216,17 @@ app.post('/api/get-download-url', async (req, res) => {
     }
 
     const paidOrder = snap.docs[0].data();
+    
+    // CHECK: Payment must be verified
+    if (!paidOrder.payment_verified) {
+      return res.status(403).json({ error: 'Payment not yet verified. Please complete the payment verification first.' });
+    }
+    
     if (paidOrder.expires_at && new Date(paidOrder.expires_at.toDate()) < new Date()) {
       return res.status(403).json({ error: 'Download link expired. Please re-register.' });
     }
 
-    // Device verified! Generate signed URL from Firebase Storage
+    // Device verified AND payment verified! Generate signed URL from Firebase Storage
     const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
     const apkPath = process.env.APK_STORAGE_PATH || 'app-release.apk';
 
@@ -237,6 +245,74 @@ app.post('/api/get-download-url', async (req, res) => {
     res.json({ url });
   } catch (err) {
     console.error('Error generating download URL:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Verify payment from LemonSqueezy ──────────────────────────────────────
+// POST /api/verify-payment { order_id, email }
+// Called after successful LemonSqueezy payment
+app.post('/api/verify-payment', async (req, res) => {
+  const { order_id, email } = req.body || {};
+  
+  if (!order_id || !email || !email.includes('@')) {
+    return res.status(400).json({ error: 'order_id and email required' });
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+  const lemonApiKey = process.env.LEMON_SQUEEZY_API_KEY;
+
+  if (!lemonApiKey) {
+    console.error('⚠️ LEMON_SQUEEZY_API_KEY not configured');
+    return res.status(500).json({ error: 'Payment verification service not configured' });
+  }
+
+  try {
+    // Query LemonSqueezy API to verify the order
+    const lemonResponse = await fetch(`https://api.lemonsqueezy.com/v1/orders/${order_id}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${lemonApiKey}` },
+    });
+
+    if (!lemonResponse.ok) {
+      console.log(`❌ LemonSqueezy order lookup failed:`, lemonResponse.status);
+      return res.status(403).json({ error: 'Order not found or invalid' });
+    }
+
+    const orderData = await lemonResponse.json();
+    const order = orderData.data;
+
+    // Basic validation: order should exist and be completed
+    if (!order || order.attributes.status !== 'completed') {
+      return res.status(403).json({ error: 'Order not completed or invalid' });
+    }
+
+    console.log(`✓ LemonSqueezy order ${order_id} verified`);
+
+    // Find email in paid_orders and mark as verified
+    const snap = await db.collection('paid_orders')
+      .where('email', '==', normalizedEmail)
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      return res.status(404).json({ error: 'Email not registered. Please register first before payment.' });
+    }
+
+    const docId = snap.docs[0].id;
+    const existingData = snap.docs[0].data();
+
+    // Update to mark payment as verified
+    await db.collection('paid_orders').doc(docId).update({
+      payment_verified: true,
+      verified_at: new Date(),
+      lemon_order_id: order_id,
+    });
+
+    console.log(`✓ Payment verified for ${normalizedEmail}, order ${order_id}`);
+    res.json({ ok: true, message: 'Payment verified successfully' });
+  } catch (err) {
+    console.error('verify-payment error:', err);
     res.status(500).json({ error: err.message });
   }
 });
