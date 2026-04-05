@@ -252,11 +252,12 @@ app.post('/api/get-download-url', async (req, res) => {
 // ── Verify payment from LemonSqueezy ──────────────────────────────────────
 // POST /api/verify-payment { order_id, email }
 // Called after successful LemonSqueezy payment
+// If order_id not provided, looks up latest paid order by email
 app.post('/api/verify-payment', async (req, res) => {
   const { order_id, email } = req.body || {};
   
-  if (!order_id || !email || !email.includes('@')) {
-    return res.status(400).json({ error: 'order_id and email required' });
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ error: 'email required' });
   }
 
   const normalizedEmail = email.toLowerCase().trim();
@@ -268,18 +269,45 @@ app.post('/api/verify-payment', async (req, res) => {
   }
 
   try {
-    // Query LemonSqueezy API to verify the order
-    const lemonResponse = await fetch(`https://api.lemonsqueezy.com/v1/orders/${order_id}`, {
+    let verifiedOrderId = order_id;
+
+    // If no explicit order_id provided, lookup latest paid order by email
+    if (!order_id) {
+      console.log(`Looking up paid orders for ${normalizedEmail} in LemonSqueezy...`);
+      const searchResponse = await fetch(`https://api.lemonsqueezy.com/v1/orders?filter[customer_email]=${encodeURIComponent(normalizedEmail)}&sort=-created_at`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${lemonApiKey}` },
+      });
+
+      if (!searchResponse.ok) {
+        console.log(`❌ LemonSqueezy search failed:`, searchResponse.status);
+        return res.status(403).json({ error: 'Could not find paid orders for this email' });
+      }
+
+      const searchData = await searchResponse.json();
+      const paidOrders = searchData.data.filter(o => o.attributes.status === 'completed');
+
+      if (paidOrders.length === 0) {
+        return res.status(403).json({ error: 'No paid orders found for this email. Please complete payment first.' });
+      }
+
+      // Use most recent paid order
+      verifiedOrderId = paidOrders[0].id;
+      console.log(`✓ Found paid order ${verifiedOrderId} for ${normalizedEmail}`);
+    }
+
+    // Verify the order details
+    const orderResponse = await fetch(`https://api.lemonsqueezy.com/v1/orders/${verifiedOrderId}`, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${lemonApiKey}` },
     });
 
-    if (!lemonResponse.ok) {
-      console.log(`❌ LemonSqueezy order lookup failed:`, lemonResponse.status);
+    if (!orderResponse.ok) {
+      console.log(`❌ LemonSqueezy order lookup failed:`, orderResponse.status);
       return res.status(403).json({ error: 'Order not found or invalid' });
     }
 
-    const orderData = await lemonResponse.json();
+    const orderData = await orderResponse.json();
     const order = orderData.data;
 
     // Basic validation: order should exist and be completed
@@ -287,7 +315,7 @@ app.post('/api/verify-payment', async (req, res) => {
       return res.status(403).json({ error: 'Order not completed or invalid' });
     }
 
-    console.log(`✓ LemonSqueezy order ${order_id} verified`);
+    console.log(`✓ LemonSqueezy order ${verifiedOrderId} verified (status: ${order.attributes.status})`);
 
     // Find email in paid_orders and mark as verified
     const snap = await db.collection('paid_orders')
@@ -296,21 +324,27 @@ app.post('/api/verify-payment', async (req, res) => {
       .get();
 
     if (snap.empty) {
-      return res.status(404).json({ error: 'Email not registered. Please register first before payment.' });
+      // Email not registered, create entry
+      await db.collection('paid_orders').add({
+        email: normalizedEmail,
+        payment_verified: true,
+        verified_at: new Date(),
+        lemon_order_id: verifiedOrderId,
+        source: 'lemonsqueezy_api',
+      });
+      console.log(`✓ New entry created for ${normalizedEmail}, marked verified`);
+    } else {
+      // Update existing to mark payment as verified
+      const docId = snap.docs[0].id;
+      await db.collection('paid_orders').doc(docId).update({
+        payment_verified: true,
+        verified_at: new Date(),
+        lemon_order_id: verifiedOrderId,
+      });
+      console.log(`✓ Payment verified for ${normalizedEmail}, order ${verifiedOrderId}`);
     }
 
-    const docId = snap.docs[0].id;
-    const existingData = snap.docs[0].data();
-
-    // Update to mark payment as verified
-    await db.collection('paid_orders').doc(docId).update({
-      payment_verified: true,
-      verified_at: new Date(),
-      lemon_order_id: order_id,
-    });
-
-    console.log(`✓ Payment verified for ${normalizedEmail}, order ${order_id}`);
-    res.json({ ok: true, message: 'Payment verified successfully' });
+    res.json({ ok: true, message: 'Payment verified successfully', order_id: verifiedOrderId });
   } catch (err) {
     console.error('verify-payment error:', err);
     res.status(500).json({ error: err.message });
