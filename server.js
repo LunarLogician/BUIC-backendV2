@@ -3,6 +3,7 @@ const path = require('path');
 const admin = require('firebase-admin');
 const serverless = require('serverless-http');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const app = express();
 
@@ -56,6 +57,12 @@ if (!admin.apps.length) {
   }
 }
 const db = admin.firestore();
+
+// ── Generate device-locked download hash ────────────────────────────────
+function generateDownloadHash(email, deviceId) {
+  const data = `${email}:${deviceId}:${process.env.DOWNLOAD_SALT || 'buic-default-salt'}`;
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
 
 // ── Write premium_paid = true to Firestore ────────────────────────────────
 async function markEnrollmentPaidInFirestore(enrollment) {
@@ -120,15 +127,20 @@ app.get('/api/admin/payments', async (req, res) => {
 
 // ── Track download intent (email + role stats) & store to paid_orders ────
 app.post('/api/track-download', async (req, res) => {
-  const { email, role } = req.body || {};
+  const { email, role, device_id } = req.body || {};
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'invalid email' });
+  if (!device_id) return res.status(400).json({ error: 'device_id required' });
+  
   try {
     const normalizedEmail = email.toLowerCase().trim();
+    const downloadHash = generateDownloadHash(normalizedEmail, device_id);
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     // Store to download_leads (analytics - always)
     await db.collection('download_leads').add({
       email,
       role: role || 'unknown',
+      device_id,
       ts: new Date().toISOString(),
     });
 
@@ -136,49 +148,68 @@ app.post('/api/track-download', async (req, res) => {
     const existing = await db.collection('paid_orders').where('email', '==', normalizedEmail).limit(1).get();
     
     if (existing.empty) {
-      // New email - store to paid_orders
+      // New email - store to paid_orders with device_id and hash
       await db.collection('paid_orders').add({
         email: normalizedEmail,
+        device_id,
+        download_hash: downloadHash,
         order_id: 'download-form-' + Date.now(),
         paid_at: new Date(),
+        expires_at: expiresAt,
       });
-      console.log(`✓ NEW: Stored email ${normalizedEmail} to paid_orders`);
+      console.log(`✓ NEW: Stored email ${normalizedEmail} with device ${device_id}`);
     } else {
-      // Duplicate - just log it, user can still download
-      console.log(`ℹ️ DUPLICATE: Email ${normalizedEmail} already in paid_orders, skipped`);
+      // Duplicate - update device_id and hash for this device
+      const docId = existing.docs[0].id;
+      await db.collection('paid_orders').doc(docId).update({
+        device_id,
+        download_hash: downloadHash,
+        expires_at: expiresAt,
+      });
+      console.log(`ℹ️ DUPLICATE: Updated hash for email ${normalizedEmail} on device ${device_id}`);
     }
 
-    res.json({ ok: true });
+    res.json({ ok: true, download_hash: downloadHash });
   } catch (err) {
     console.error('track-download error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── Get secure APK download URL ─────────────────────────────────────────────
-// POST /api/get-download-url (no email required)
-// Security: LemonSqueezy already verified payment before redirecting here
+// ── Get secure APK download URL (device-locked) ──────────────────────────
+// POST /api/get-download-url { email, device_id }
+// Only same device that registered the email can download
 app.post('/api/get-download-url', async (req, res) => {
-  const { email } = req.body || {};
+  const { email, device_id } = req.body || {};
   
   if (!email || !email.includes('@')) {
     return res.status(400).json({ error: 'Invalid email address' });
   }
+  if (!device_id) {
+    return res.status(400).json({ error: 'device_id required' });
+  }
 
   const normalizedEmail = email.toLowerCase().trim();
+  const expectedHash = generateDownloadHash(normalizedEmail, device_id);
 
   try {
-    // Check if this email exists in paid_orders collection (proof they paid)
+    // Check if email + device_id match in paid_orders (device-locked verification)
     const snap = await db.collection('paid_orders')
       .where('email', '==', normalizedEmail)
+      .where('download_hash', '==', expectedHash)
       .limit(1)
       .get();
 
     if (snap.empty) {
-      return res.status(404).json({ error: 'No payment found for this email. Please verify you used the correct email from your payment.' });
+      return res.status(403).json({ error: 'Download not authorized for this device. Please register with the same device used during payment.' });
     }
 
-    // Email verified! Generate signed URL from Firebase Storage
+    const paidOrder = snap.docs[0].data();
+    if (paidOrder.expires_at && new Date(paidOrder.expires_at.toDate()) < new Date()) {
+      return res.status(403).json({ error: 'Download link expired. Please re-register.' });
+    }
+
+    // Device verified! Generate signed URL from Firebase Storage
     const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
     const apkPath = process.env.APK_STORAGE_PATH || 'app-release.apk';
 
@@ -193,6 +224,7 @@ app.post('/api/get-download-url', async (req, res) => {
       expires: Date.now() + 60 * 60 * 1000, // 1 hour
     });
 
+    console.log(`✓ Download authorized for ${normalizedEmail} on device ${device_id}`);
     res.json({ url });
   } catch (err) {
     console.error('Error generating download URL:', err);
