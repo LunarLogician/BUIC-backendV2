@@ -2,8 +2,28 @@ const express = require('express');
 const path = require('path');
 const admin = require('firebase-admin');
 const serverless = require('serverless-http');
+const cors = require('cors');
 
 const app = express();
+
+// ─── CORS ─────────────────────────────────────────────────────────────────
+const allowedOrigins = [
+  'https://bu-frontend-three.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5500',
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, webhooks)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-admin-secret'],
+}));
 
 // ─── Middleware ───────────────────────────────────────────────────────────
 app.use(express.json());
