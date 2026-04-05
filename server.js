@@ -134,33 +134,19 @@ app.post('/api/track-download', async (req, res) => {
   }
 });
 
-// ── Get secure APK download URL (for paid customers) ─────────────────────
-// POST /api/get-download-url { email }
+// ── Get secure APK download URL ─────────────────────────────────────────────
+// POST /api/get-download-url (no email required)
+// Security: LemonSqueezy already verified payment before redirecting here
 app.post('/api/get-download-url', async (req, res) => {
-  const { email } = req.body || {};
-  if (!email || !email.includes('@')) {
-    return res.status(400).json({ error: 'Invalid email' });
-  }
-  const normalizedEmail = email.toLowerCase().trim();
   try {
-    // Check paid_orders collection for this email
-    const snap = await db.collection('paid_orders')
-      .where('email', '==', normalizedEmail)
-      .limit(1)
-      .get();
-
-    if (snap.empty) {
-      return res.status(404).json({ error: 'No purchase found for this email. Please use the email you paid with.' });
-    }
-
-    // Generate a signed URL from Firebase Storage (expires in 1 hour)
     const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
-    const apkPath = process.env.APK_STORAGE_PATH || 'apks/BU_Assistant.apk';
+    const apkPath = process.env.APK_STORAGE_PATH || 'app-release.apk';
 
     if (!bucketName) {
       return res.status(500).json({ error: 'Storage not configured' });
     }
 
+    // Generate a signed URL from Firebase Storage (expires in 1 hour)
     const bucket = admin.storage().bucket(bucketName);
     const file = bucket.file(apkPath);
     const [url] = await file.getSignedUrl({
