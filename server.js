@@ -26,7 +26,13 @@ app.use(cors({
 }));
 
 // ─── Middleware ───────────────────────────────────────────────────────────
-app.use(express.json());
+// For webhook route: capture raw body for HMAC signature verification
+app.use('/webhooks/lemonsqueezy', express.raw({ type: 'application/json' }));
+// For all other routes: normal JSON parsing
+app.use((req, res, next) => {
+  if (req.path.startsWith('/webhooks/lemonsqueezy')) return next();
+  express.json()(req, res, next);
+});
 
 // Import webhook routes
 const webhookRoutes = require('./routes/webhook');
@@ -39,7 +45,7 @@ if (!admin.apps.length) {
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   } else {
     const fs = require('fs');
-    const serviceAccountPath = path.join(__dirname, 'serviceAccountKey.json');
+    const serviceAccountPath = path.join(__dirname, 'buic-839ab-firebase-adminsdk-fbsvc-70e45a5e33.json');
     if (fs.existsSync(serviceAccountPath)) {
       admin.initializeApp({
         credential: admin.credential.cert(require(serviceAccountPath)),

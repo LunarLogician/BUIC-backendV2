@@ -71,7 +71,8 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
             return res.status(401).json({ error: 'Invalid signature' });
         }
 
-        const event = req.body;
+        // Parse body (raw buffer from express.raw middleware)
+        const event = Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString()) : req.body;
         console.log(`Received Lemonsqueezy webhook: ${event.meta.event_name}`);
 
         // Handle different event types
@@ -318,7 +319,7 @@ router.post('/api/send-download-link', async (req, res) => {
 
         // Fetch enrollment from Firestore
         const enrollmentDoc = await admin.firestore()
-            .collection('enrollments')
+            .collection('students')
             .doc(enrollment)
             .get();
 
@@ -401,7 +402,7 @@ function verifyLemonsqueezySignature(body, signature) {
         return false;
     }
 
-    const payload = typeof body === 'string' ? body : JSON.stringify(body);
+    const payload = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
     const expectedSignature = crypto
         .createHmac('sha256', LEMONSQUEEZY_WEBHOOK_SECRET)
         .update(payload)
