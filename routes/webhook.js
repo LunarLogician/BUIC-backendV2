@@ -77,20 +77,27 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
 
         // Handle different event types
         switch (event.meta.event_name) {
+            case 'order_created':
+            case 'order_completed':
             case 'order:created':
             case 'order:completed':
                 await handleOrderCompleted(event.data, event.meta);
                 break;
 
+            case 'subscription_created':
+            case 'subscription_updated':
             case 'subscription:created':
             case 'subscription:updated':
                 await handleSubscriptionEvent(event.data, event.meta);
                 break;
 
+            case 'subscription_resumed':
             case 'subscription:resumed':
                 await handleSubscriptionResumed(event.data, event.meta);
                 break;
 
+            case 'subscription_paused':
+            case 'subscription_cancelled':
             case 'subscription:paused':
             case 'subscription:cancelled':
                 await handleSubscriptionCancelled(event.data, event.meta);
