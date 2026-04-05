@@ -146,7 +146,6 @@ app.post('/api/get-download-url', async (req, res) => {
     // Check paid_orders collection for this email
     const snap = await db.collection('paid_orders')
       .where('email', '==', normalizedEmail)
-      .orderBy('paid_at', 'desc')
       .limit(1)
       .get();
 
