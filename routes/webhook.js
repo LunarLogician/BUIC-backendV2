@@ -118,54 +118,26 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
  * Handle completed orders
  */
 async function handleOrderCompleted(orderData, meta) {
-    try {
-        console.log(`Processing payment for order: ${orderData.id}`);
-
-        // Extract customer and plan info
-        // LemonSqueezy sends custom_data under meta, not orderData.attributes
-        const customAttributes = meta?.custom_data || orderData.attributes?.custom_data || {};
-        const enrollment = customAttributes.enrollment || orderData.attributes?.customer_email;
-        const plan = customAttributes.plan || 'pro';
-
-        if (!enrollment) {
-            console.warn(`No enrollment ID found for order ${orderData.id}`);
-            return;
-        }
-
-        // Update Firestore - Mark enrollment as premium paid (students collection)
-        await admin.firestore().collection('students').doc(enrollment).set({
-            premium_paid: true,
-            premium_plan: plan,
-            payment_date: new Date(),
-            order_id: orderData.id,
-            order_status: orderData.attributes?.status || 'completed'
-        }, { merge: true });
-
-        // Store paid order for APK download access (keyed by email)
-        const customerEmail = orderData.attributes?.customer_email;
-        if (customerEmail) {
-            await admin.firestore().collection('paid_orders').add({
-                email: customerEmail.toLowerCase().trim(),
-                order_id: String(orderData.id),
-                paid_at: new Date(),
-            });
-        }
-
-        console.log(`✓ Updated Firestore for enrollment: ${enrollment}`);
-
-        // Send order confirmation email with download link
-        if (orderData.attributes?.customer_email) {
-            await sendOrderConfirmationEmail(
-                orderData.attributes.customer_email,
-                enrollment,
-                plan,
-                orderData.id
-            );
-        }
-    } catch (error) {
-        console.error('Error handling order:', error);
-        throw error;
+  try {
+    const customerEmail = orderData.attributes?.customer_email;
+    
+    if (!customerEmail) {
+      console.warn('No email found in order', orderData.id);
+      return;
     }
+
+    // Write to paid_orders — this is what gate-keeps the download
+    await admin.firestore().collection('paid_orders').add({
+      email: customerEmail.toLowerCase().trim(),
+      order_id: String(orderData.id),
+      paid_at: new Date(),
+    });
+
+    console.log(`✓ Payment recorded for ${customerEmail}`);
+  } catch (error) {
+    console.error('Error handling order:', error);
+    throw error;
+  }
 }
 
 /**
