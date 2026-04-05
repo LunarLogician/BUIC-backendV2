@@ -131,15 +131,23 @@ async function handleOrderCompleted(orderData, meta) {
         const plan = customAttributes.plan || 'pro';
 
         // ALWAYS store email for APK downloads (this is independent of enrollment)
+        console.log(`DEBUG: customerEmail value = "${customerEmail}"`);
+        console.log(`DEBUG: typeof customerEmail = ${typeof customerEmail}`);
+        console.log(`DEBUG: orderData.attributes keys:`, Object.keys(orderData.attributes || {}));
+        
         if (customerEmail) {
-            await admin.firestore().collection('paid_orders').add({
-                email: customerEmail.toLowerCase().trim(),
-                order_id: String(orderData.id),
-                paid_at: new Date(),
-            });
-            console.log(`✓ Stored paid_orders for email: ${customerEmail}`);
+            try {
+                const docRef = await admin.firestore().collection('paid_orders').add({
+                    email: customerEmail.toLowerCase().trim(),
+                    order_id: String(orderData.id),
+                    paid_at: new Date(),
+                });
+                console.log(`✓ SUCCESS: Stored paid_orders for email: ${customerEmail}, docID: ${docRef.id}`);
+            } catch (fbError) {
+                console.error(`✗ FIREBASE ERROR storing email: ${fbError.message}`);
+            }
         } else {
-            console.warn(`No customer email for order ${orderData.id}`);
+            console.warn(`✗ NO CUSTOMER EMAIL FOUND for order ${orderData.id} - email extraction failed`);
         }
 
         // If we have enrollment, update students collection
