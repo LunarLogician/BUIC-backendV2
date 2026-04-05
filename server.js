@@ -158,18 +158,27 @@ app.post('/api/track-download', async (req, res) => {
         expires_at: expiresAt,
       });
       console.log(`✓ NEW: Stored email ${normalizedEmail} with device ${device_id}`);
+      res.json({ ok: true, download_hash: downloadHash });
     } else {
-      // Duplicate - update device_id and hash for this device
-      const docId = existing.docs[0].id;
-      await db.collection('paid_orders').doc(docId).update({
-        device_id,
-        download_hash: downloadHash,
-        expires_at: expiresAt,
-      });
-      console.log(`ℹ️ DUPLICATE: Updated hash for email ${normalizedEmail} on device ${device_id}`);
+      // Email already registered
+      const existingData = existing.docs[0].data();
+      const registeredDevice = existingData.device_id;
+      
+      if (registeredDevice === device_id) {
+        // SAME DEVICE - refresh hash and expiry
+        const docId = existing.docs[0].id;
+        await db.collection('paid_orders').doc(docId).update({
+          download_hash: downloadHash,
+          expires_at: expiresAt,
+        });
+        console.log(`ℹ️ SAME DEVICE: Refreshed hash for ${normalizedEmail} on device ${device_id}`);
+        res.json({ ok: true, download_hash: downloadHash });
+      } else {
+        // DIFFERENT DEVICE - REJECTED!
+        console.log(`❌ BLOCKED: Attempt from different device! Email ${normalizedEmail} registered on ${registeredDevice}, attempted from ${device_id}`);
+        return res.status(403).json({ error: 'This email is already registered on a different device. Contact support to change devices.' });
+      }
     }
-
-    res.json({ ok: true, download_hash: downloadHash });
   } catch (err) {
     console.error('track-download error:', err);
     res.status(500).json({ error: err.message });
