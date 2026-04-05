@@ -3,7 +3,6 @@ const path = require('path');
 const admin = require('firebase-admin');
 const serverless = require('serverless-http');
 const cors = require('cors');
-const crypto = require('crypto');
 
 const app = express();
 
@@ -57,12 +56,6 @@ if (!admin.apps.length) {
   }
 }
 const db = admin.firestore();
-
-// ── Generate device-locked download hash ────────────────────────────────
-function generateDownloadHash(email, deviceId) {
-  const data = `${email}:${deviceId}:${process.env.DOWNLOAD_SALT || 'buic-default-salt'}`;
-  return crypto.createHash('sha256').update(data).digest('hex');
-}
 
 // ── Write premium_paid = true to Firestore ────────────────────────────────
 async function markEnrollmentPaidInFirestore(enrollment) {
@@ -125,108 +118,45 @@ app.get('/api/admin/payments', async (req, res) => {
   }
 });
 
-// ── Track download intent (email + role stats) & store to paid_orders ────
 app.post('/api/track-download', async (req, res) => {
-  const { email, role, device_id } = req.body || {};
+  const { email, role } = req.body || {};
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'invalid email' });
-  if (!device_id) return res.status(400).json({ error: 'device_id required' });
-  
   try {
-    const normalizedEmail = email.toLowerCase().trim();
-    const downloadHash = generateDownloadHash(normalizedEmail, device_id);
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-    // Store to download_leads (analytics - always)
+    // ONLY store to analytics, NOT to paid_orders
     await db.collection('download_leads').add({
       email,
       role: role || 'unknown',
-      device_id,
       ts: new Date().toISOString(),
     });
-
-    // Check if email already exists in paid_orders (prevent duplicates)
-    const existing = await db.collection('paid_orders').where('email', '==', normalizedEmail).limit(1).get();
-    
-    if (existing.empty) {
-      // New email - store to paid_orders with device_id and hash
-      await db.collection('paid_orders').add({
-        email: normalizedEmail,
-        device_id,
-        download_hash: downloadHash,
-        order_id: 'download-form-' + Date.now(),
-        paid_at: new Date(),
-        expires_at: expiresAt,
-        payment_verified: false, // NOT verified until webhook/payment API confirms
-      });
-      console.log(`✓ NEW: Stored email ${normalizedEmail} with device ${device_id} (pending verification)`);
-      res.json({ ok: true, download_hash: downloadHash });
-    } else {
-      // Email already registered
-      const existingData = existing.docs[0].data();
-      const registeredDevice = existingData.device_id;
-      
-      if (registeredDevice === device_id) {
-        // SAME DEVICE - refresh hash and expiry
-        const docId = existing.docs[0].id;
-        await db.collection('paid_orders').doc(docId).update({
-          download_hash: downloadHash,
-          expires_at: expiresAt,
-        });
-        console.log(`ℹ️ SAME DEVICE: Refreshed hash for ${normalizedEmail} on device ${device_id}`);
-        res.json({ ok: true, download_hash: downloadHash });
-      } else {
-        // DIFFERENT DEVICE - REJECTED!
-        console.log(`❌ BLOCKED: Attempt from different device! Email ${normalizedEmail} registered on ${registeredDevice}, attempted from ${device_id}`);
-        return res.status(403).json({ error: 'This email is already registered on a different device. Contact support to change devices.' });
-      }
-    }
+    res.json({ ok: true });
   } catch (err) {
-    console.error('track-download error:', err);
     res.status(500).json({ error: err.message });
   }
 });
-
-// ── Get secure APK download URL (device-locked) ──────────────────────────
-// POST /api/get-download-url { email, device_id }
-// Only same device that registered the email can download
-// AND payment must be verified
+// ── Get secure APK download URL ─────────────────────────────────────────────
+// POST /api/get-download-url { email }
+// Simple: just check if email has registered/paid
 app.post('/api/get-download-url', async (req, res) => {
-  const { email, device_id } = req.body || {};
+  const { email } = req.body || {};
   
   if (!email || !email.includes('@')) {
     return res.status(400).json({ error: 'Invalid email address' });
   }
-  if (!device_id) {
-    return res.status(400).json({ error: 'device_id required' });
-  }
 
   const normalizedEmail = email.toLowerCase().trim();
-  const expectedHash = generateDownloadHash(normalizedEmail, device_id);
 
   try {
-    // Check if email + device_id match in paid_orders (device-locked verification)
+    // Check if this email exists in paid_orders collection
     const snap = await db.collection('paid_orders')
       .where('email', '==', normalizedEmail)
-      .where('download_hash', '==', expectedHash)
       .limit(1)
       .get();
 
     if (snap.empty) {
-      return res.status(403).json({ error: 'Download not authorized for this device. Please register with the same device used during payment.' });
+      return res.status(404).json({ error: 'No payment found for this email. Please verify you used the correct email from your payment.' });
     }
 
-    const paidOrder = snap.docs[0].data();
-    
-    // CHECK: Payment must be verified
-    if (!paidOrder.payment_verified) {
-      return res.status(403).json({ error: 'Payment not yet verified. Please complete the payment verification first.' });
-    }
-    
-    if (paidOrder.expires_at && new Date(paidOrder.expires_at.toDate()) < new Date()) {
-      return res.status(403).json({ error: 'Download link expired. Please re-register.' });
-    }
-
-    // Device verified AND payment verified! Generate signed URL from Firebase Storage
+    // Email found! Generate signed URL from Firebase Storage
     const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
     const apkPath = process.env.APK_STORAGE_PATH || 'app-release.apk';
 
@@ -241,112 +171,10 @@ app.post('/api/get-download-url', async (req, res) => {
       expires: Date.now() + 60 * 60 * 1000, // 1 hour
     });
 
-    console.log(`✓ Download authorized for ${normalizedEmail} on device ${device_id}`);
+    console.log(`✓ Download authorized for ${normalizedEmail}`);
     res.json({ url });
   } catch (err) {
     console.error('Error generating download URL:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Verify payment from LemonSqueezy ──────────────────────────────────────
-// POST /api/verify-payment { order_id, email }
-// Called after successful LemonSqueezy payment
-// If order_id not provided, looks up latest paid order by email
-app.post('/api/verify-payment', async (req, res) => {
-  const { order_id, email } = req.body || {};
-  
-  if (!email || !email.includes('@')) {
-    return res.status(400).json({ error: 'email required' });
-  }
-
-  const normalizedEmail = email.toLowerCase().trim();
-  const lemonApiKey = process.env.LEMON_SQUEEZY_API_KEY;
-
-  if (!lemonApiKey) {
-    console.error('⚠️ LEMON_SQUEEZY_API_KEY not configured');
-    return res.status(500).json({ error: 'Payment verification service not configured' });
-  }
-
-  try {
-    let verifiedOrderId = order_id;
-
-    // If no explicit order_id provided, lookup latest paid order by email
-    if (!order_id) {
-      console.log(`Looking up paid orders for ${normalizedEmail} in LemonSqueezy...`);
-      const searchResponse = await fetch(`https://api.lemonsqueezy.com/v1/orders?filter[customer_email]=${encodeURIComponent(normalizedEmail)}&sort=-created_at`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${lemonApiKey}` },
-      });
-
-      if (!searchResponse.ok) {
-        console.log(`❌ LemonSqueezy search failed:`, searchResponse.status);
-        return res.status(403).json({ error: 'Could not find paid orders for this email' });
-      }
-
-      const searchData = await searchResponse.json();
-      const paidOrders = searchData.data.filter(o => o.attributes.status === 'completed');
-
-      if (paidOrders.length === 0) {
-        return res.status(403).json({ error: 'No paid orders found for this email. Please complete payment first.' });
-      }
-
-      // Use most recent paid order
-      verifiedOrderId = paidOrders[0].id;
-      console.log(`✓ Found paid order ${verifiedOrderId} for ${normalizedEmail}`);
-    }
-
-    // Verify the order details
-    const orderResponse = await fetch(`https://api.lemonsqueezy.com/v1/orders/${verifiedOrderId}`, {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${lemonApiKey}` },
-    });
-
-    if (!orderResponse.ok) {
-      console.log(`❌ LemonSqueezy order lookup failed:`, orderResponse.status);
-      return res.status(403).json({ error: 'Order not found or invalid' });
-    }
-
-    const orderData = await orderResponse.json();
-    const order = orderData.data;
-
-    // Basic validation: order should exist and be completed
-    if (!order || order.attributes.status !== 'completed') {
-      return res.status(403).json({ error: 'Order not completed or invalid' });
-    }
-
-    console.log(`✓ LemonSqueezy order ${verifiedOrderId} verified (status: ${order.attributes.status})`);
-
-    // Find email in paid_orders and mark as verified
-    const snap = await db.collection('paid_orders')
-      .where('email', '==', normalizedEmail)
-      .limit(1)
-      .get();
-
-    if (snap.empty) {
-      // Email not registered, create entry
-      await db.collection('paid_orders').add({
-        email: normalizedEmail,
-        payment_verified: true,
-        verified_at: new Date(),
-        lemon_order_id: verifiedOrderId,
-        source: 'lemonsqueezy_api',
-      });
-      console.log(`✓ New entry created for ${normalizedEmail}, marked verified`);
-    } else {
-      // Update existing to mark payment as verified
-      const docId = snap.docs[0].id;
-      await db.collection('paid_orders').doc(docId).update({
-        payment_verified: true,
-        verified_at: new Date(),
-        lemon_order_id: verifiedOrderId,
-      });
-      console.log(`✓ Payment verified for ${normalizedEmail}, order ${verifiedOrderId}`);
-    }
-
-    res.json({ ok: true, message: 'Payment verified successfully', order_id: verifiedOrderId });
-  } catch (err) {
-    console.error('verify-payment error:', err);
     res.status(500).json({ error: err.message });
   }
 });

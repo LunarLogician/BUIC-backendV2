@@ -120,66 +120,47 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
 async function handleOrderCompleted(orderData, meta) {
     try {
         console.log(`Processing payment for order: ${orderData.id}`);
-        console.log(`DEBUG orderData.attributes:`, JSON.stringify(orderData.attributes, null, 2));
-        console.log(`DEBUG orderData.relationships:`, JSON.stringify(orderData.relationships, null, 2));
-        console.log(`DEBUG meta:`, JSON.stringify(meta, null, 2));
 
         // Extract customer and plan info
+        // LemonSqueezy sends custom_data under meta, not orderData.attributes
         const customAttributes = meta?.custom_data || orderData.attributes?.custom_data || {};
-        const enrollment = customAttributes.enrollment;
+        const enrollment = customAttributes.enrollment || orderData.attributes?.customer_email;
         const plan = customAttributes.plan || 'pro';
 
-        // Try multiple possible locations for customer email
-        let customerEmail = orderData.attributes?.customer_email || 
-                           orderData.attributes?.email ||
-                           orderData.customer_email ||
-                           orderData.email ||
-                           customAttributes.email;
-
-        console.log(`DEBUG fullOrderData:`, JSON.stringify(orderData, null, 2));
-        console.log(`DEBUG: Extracted email from: customerEmail="${customerEmail}"`);
-
-        // ALWAYS store email for APK downloads (this is independent of enrollment)
-        console.log(`DEBUG: customerEmail value = "${customerEmail}"`);
-        console.log(`DEBUG: typeof customerEmail = ${typeof customerEmail}`);
-        
-        if (customerEmail && customerEmail.includes('@')) {
-            try {
-                const docRef = await admin.firestore().collection('paid_orders').add({
-                    email: customerEmail.toLowerCase().trim(),
-                    order_id: String(orderData.id),
-                    paid_at: new Date(),
-                });
-                console.log(`✓✓✓ SUCCESS STORING EMAIL: ${customerEmail} to docID: ${docRef.id}`);
-            } catch (fbError) {
-                console.error(`✗✗✗ FIREBASE ERROR storing email: ${fbError.message}`);
-            }
-        } else {
-            console.error(`✗✗✗ NO VALID CUSTOMER EMAIL FOUND for order ${orderData.id}. customerEmail="${customerEmail}"`);
+        if (!enrollment) {
+            console.warn(`No enrollment ID found for order ${orderData.id}`);
+            return;
         }
 
-        // If we have enrollment, update students collection
-        if (enrollment) {
-            await admin.firestore().collection('students').doc(enrollment).set({
-                premium_paid: true,
-                premium_plan: plan,
-                payment_date: new Date(),
-                order_id: orderData.id,
-                order_status: orderData.attributes?.status || 'completed'
-            }, { merge: true });
-            console.log(`✓ Updated Firestore for enrollment: ${enrollment}`);
+        // Update Firestore - Mark enrollment as premium paid (students collection)
+        await admin.firestore().collection('students').doc(enrollment).set({
+            premium_paid: true,
+            premium_plan: plan,
+            payment_date: new Date(),
+            order_id: orderData.id,
+            order_status: orderData.attributes?.status || 'completed'
+        }, { merge: true });
 
-            // Send order confirmation email
-            if (customerEmail) {
-                await sendOrderConfirmationEmail(
-                    customerEmail,
-                    enrollment,
-                    plan,
-                    orderData.id
-                );
-            }
-        } else {
-            console.warn(`No enrollment ID found for order ${orderData.id}, but email was stored for APK access`);
+        // Store paid order for APK download access (keyed by email)
+        const customerEmail = orderData.attributes?.customer_email;
+        if (customerEmail) {
+            await admin.firestore().collection('paid_orders').add({
+                email: customerEmail.toLowerCase().trim(),
+                order_id: String(orderData.id),
+                paid_at: new Date(),
+            });
+        }
+
+        console.log(`✓ Updated Firestore for enrollment: ${enrollment}`);
+
+        // Send order confirmation email with download link
+        if (orderData.attributes?.customer_email) {
+            await sendOrderConfirmationEmail(
+                orderData.attributes.customer_email,
+                enrollment,
+                plan,
+                orderData.id
+            );
         }
     } catch (error) {
         console.error('Error handling order:', error);
