@@ -118,6 +118,64 @@ app.get('/api/admin/payments', async (req, res) => {
   }
 });
 
+// ── Track download intent (email + role stats) ────────────────────────────
+app.post('/api/track-download', async (req, res) => {
+  const { email, role } = req.body || {};
+  if (!email || !email.includes('@')) return res.status(400).json({ error: 'invalid email' });
+  try {
+    await db.collection('download_leads').add({
+      email,
+      role: role || 'unknown',
+      ts: new Date().toISOString(),
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Get secure APK download URL (for paid customers) ─────────────────────
+// POST /api/get-download-url { email }
+app.post('/api/get-download-url', async (req, res) => {
+  const { email } = req.body || {};
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ error: 'Invalid email' });
+  }
+  const normalizedEmail = email.toLowerCase().trim();
+  try {
+    // Check paid_orders collection for this email
+    const snap = await db.collection('paid_orders')
+      .where('email', '==', normalizedEmail)
+      .orderBy('paid_at', 'desc')
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      return res.status(404).json({ error: 'No purchase found for this email. Please use the email you paid with.' });
+    }
+
+    // Generate a signed URL from Firebase Storage (expires in 1 hour)
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
+    const apkPath = process.env.APK_STORAGE_PATH || 'apks/BU_Assistant.apk';
+
+    if (!bucketName) {
+      return res.status(500).json({ error: 'Storage not configured' });
+    }
+
+    const bucket = admin.storage().bucket(bucketName);
+    const file = bucket.file(apkPath);
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 60 * 60 * 1000, // 1 hour
+    });
+
+    res.json({ url });
+  } catch (err) {
+    console.error('Error generating download URL:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Mount webhook routes ─────────────────────────────────────────────────
 app.use('/', webhookRoutes);
 

@@ -141,6 +141,16 @@ async function handleOrderCompleted(orderData, meta) {
             order_status: orderData.attributes?.status || 'completed'
         }, { merge: true });
 
+        // Store paid order for APK download access (keyed by email)
+        const customerEmail = orderData.attributes?.customer_email;
+        if (customerEmail) {
+            await admin.firestore().collection('paid_orders').add({
+                email: customerEmail.toLowerCase().trim(),
+                order_id: String(orderData.id),
+                paid_at: new Date(),
+            });
+        }
+
         console.log(`✓ Updated Firestore for enrollment: ${enrollment}`);
 
         // Send order confirmation email with download link
