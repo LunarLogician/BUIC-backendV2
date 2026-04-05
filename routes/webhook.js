@@ -120,6 +120,9 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
 async function handleOrderCompleted(orderData, meta) {
     try {
         console.log(`Processing payment for order: ${orderData.id}`);
+        console.log(`DEBUG orderData.attributes:`, JSON.stringify(orderData.attributes, null, 2));
+        console.log(`DEBUG orderData.relationships:`, JSON.stringify(orderData.relationships, null, 2));
+        console.log(`DEBUG meta:`, JSON.stringify(meta, null, 2));
 
         // Extract customer and plan info
         const customAttributes = meta?.custom_data || orderData.attributes?.custom_data || {};
