@@ -118,18 +118,29 @@ app.get('/api/admin/payments', async (req, res) => {
   }
 });
 
-// ── Track download intent (email + role stats) ────────────────────────────
+// ── Track download intent (email + role stats) & store to paid_orders ────
 app.post('/api/track-download', async (req, res) => {
   const { email, role } = req.body || {};
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'invalid email' });
   try {
+    // Store to download_leads (analytics)
     await db.collection('download_leads').add({
       email,
       role: role || 'unknown',
       ts: new Date().toISOString(),
     });
+
+    // ALSO store to paid_orders (for download verification)
+    await db.collection('paid_orders').add({
+      email: email.toLowerCase().trim(),
+      order_id: 'download-form-' + Date.now(),
+      paid_at: new Date(),
+    });
+
+    console.log(`✓ Stored email ${email} to both download_leads and paid_orders`);
     res.json({ ok: true });
   } catch (err) {
+    console.error('track-download error:', err);
     res.status(500).json({ error: err.message });
   }
 });
