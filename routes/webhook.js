@@ -119,6 +119,9 @@ router.post('/webhooks/lemonsqueezy', async (req, res) => {
  */
 async function handleOrderCompleted(orderData, meta) {
   try {
+     console.log('orderData keys:', JSON.stringify(Object.keys(orderData)));
+    console.log('orderData attributes:', JSON.stringify(orderData.attributes));
+    console.log('full orderData:', JSON.stringify(orderData).substring(0, 1000));
     const customerEmail = orderData.attributes?.customer_email;
     
     if (!customerEmail) {
