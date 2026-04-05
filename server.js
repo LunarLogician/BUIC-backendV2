@@ -138,7 +138,26 @@ app.post('/api/track-download', async (req, res) => {
 // POST /api/get-download-url (no email required)
 // Security: LemonSqueezy already verified payment before redirecting here
 app.post('/api/get-download-url', async (req, res) => {
+  const { email } = req.body || {};
+  
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ error: 'Invalid email address' });
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
   try {
+    // Check if this email exists in paid_orders collection (proof they paid)
+    const snap = await db.collection('paid_orders')
+      .where('email', '==', normalizedEmail)
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      return res.status(404).json({ error: 'No payment found for this email. Please verify you used the correct email from your payment.' });
+    }
+
+    // Email verified! Generate signed URL from Firebase Storage
     const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
     const apkPath = process.env.APK_STORAGE_PATH || 'app-release.apk';
 
@@ -146,7 +165,6 @@ app.post('/api/get-download-url', async (req, res) => {
       return res.status(500).json({ error: 'Storage not configured' });
     }
 
-    // Generate a signed URL from Firebase Storage (expires in 1 hour)
     const bucket = admin.storage().bucket(bucketName);
     const file = bucket.file(apkPath);
     const [url] = await file.getSignedUrl({
