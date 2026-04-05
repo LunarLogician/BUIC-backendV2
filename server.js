@@ -21,7 +21,6 @@ const allowedOrigins = [
   'https://bu-frontend-three.vercel.app',
   'http://localhost:3000',
   'http://localhost:5500',
-  'https://unsharable-radiophonic-nicolle.ngrok-free.dev',
 ];
 app.use(cors({
   origin: (origin, callback) => {
@@ -227,16 +226,17 @@ app.post('/api/get-download-url', async (req, res) => {
     return res.status(400).json({ error: 'Invalid email address' });
   }
   
-  if (!enrollment) {
-    return res.status(400).json({ error: 'Enrollment ID required' });
-  }
-  
   if (!deviceHash) {
     return res.status(400).json({ error: 'Device hash required' });
   }
 
   if (!role) {
     return res.status(400).json({ error: 'Role (student/faculty/admin) required' });
+  }
+
+  // Enrollment ID only required for students
+  if (role === 'student' && !enrollment) {
+    return res.status(400).json({ error: 'Enrollment ID required' });
   }
 
   const normalizedEmail = email.toLowerCase().trim();
@@ -255,7 +255,9 @@ app.post('/api/get-download-url', async (req, res) => {
     }
 
     // 2️⃣ Check if device lock exists for this combo
-    const deviceLockId = `${normalizedEmail}|${enrollment}|${normalizedRole}`;
+    // For students: lock by enrollment, for others: lock by email
+    const lockIdentifier = normalizedRole === 'student' ? enrollment : normalizedEmail;
+    const deviceLockId = `${normalizedEmail}|${lockIdentifier}|${normalizedRole}`;
     const lockSnap = await db.collection('device_locks').doc(deviceLockId).get();
 
     if (lockSnap.exists) {
@@ -263,11 +265,13 @@ app.post('/api/get-download-url', async (req, res) => {
       
       // Device already registered - verify it matches
       if (lockData.deviceHash !== deviceHash) {
-        console.warn(`❌ DEVICE MISMATCH: ${normalizedEmail}/${enrollment}/${normalizedRole}`);
+        console.warn(`❌ DEVICE MISMATCH: ${normalizedEmail}/${lockIdentifier}/${normalizedRole}`);
         console.warn(`   Registered device: ${lockData.deviceHash.substring(0, 8)}...`);
         console.warn(`   Attempted device: ${deviceHash.substring(0, 8)}...`);
         return res.status(403).json({ 
-          error: 'This enrollment is already registered on a different device. Contact support to transfer to a new device.',
+          error: normalizedRole === 'student' 
+            ? 'This enrollment is already registered on a different device. Contact support to transfer to a new device.'
+            : 'This account is already registered on a different device. Contact support to transfer to a new device.',
           registered_device: lockData.deviceHash.substring(0, 12)
         });
       }
@@ -279,15 +283,21 @@ app.post('/api/get-download-url', async (req, res) => {
     }
 
     // 3️⃣ Update/create device lock with this combo
-    await db.collection('device_locks').doc(deviceLockId).set({
+    const lockData = {
       email: normalizedEmail,
-      enrollment: enrollment,
       role: normalizedRole,
       deviceHash: deviceHash,
       firstDownload: lockSnap.exists ? lockSnap.data().firstDownload : new Date(),
       lastDownload: new Date(),
       downloadCount: admin.firestore.FieldValue.increment(1)
-    }, { merge: true });
+    };
+    
+    // Add enrollment only for students
+    if (normalizedRole === 'student' && enrollment) {
+      lockData.enrollment = enrollment;
+    }
+    
+    await db.collection('device_locks').doc(deviceLockId).set(lockData, { merge: true });
 
     console.log(`📊 Device lock updated: ${deviceLockId.substring(0, 30)}...`);
 
@@ -311,7 +321,7 @@ app.post('/api/get-download-url', async (req, res) => {
       message: 'Download authorized for this device',
       security: {
         email: normalizedEmail,
-        enrollment: enrollment,
+        ...(normalizedRole === 'student' && { enrollment: enrollment }),
         role: normalizedRole,
         device: deviceHash.substring(0, 12)
       }
