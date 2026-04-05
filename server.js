@@ -123,21 +123,31 @@ app.post('/api/track-download', async (req, res) => {
   const { email, role } = req.body || {};
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'invalid email' });
   try {
-    // Store to download_leads (analytics)
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Store to download_leads (analytics - always)
     await db.collection('download_leads').add({
       email,
       role: role || 'unknown',
       ts: new Date().toISOString(),
     });
 
-    // ALSO store to paid_orders (for download verification)
-    await db.collection('paid_orders').add({
-      email: email.toLowerCase().trim(),
-      order_id: 'download-form-' + Date.now(),
-      paid_at: new Date(),
-    });
+    // Check if email already exists in paid_orders (prevent duplicates)
+    const existing = await db.collection('paid_orders').where('email', '==', normalizedEmail).limit(1).get();
+    
+    if (existing.empty) {
+      // New email - store to paid_orders
+      await db.collection('paid_orders').add({
+        email: normalizedEmail,
+        order_id: 'download-form-' + Date.now(),
+        paid_at: new Date(),
+      });
+      console.log(`✓ NEW: Stored email ${normalizedEmail} to paid_orders`);
+    } else {
+      // Duplicate - just log it, user can still download
+      console.log(`ℹ️ DUPLICATE: Email ${normalizedEmail} already in paid_orders, skipped`);
+    }
 
-    console.log(`✓ Stored email ${email} to both download_leads and paid_orders`);
     res.json({ ok: true });
   } catch (err) {
     console.error('track-download error:', err);
