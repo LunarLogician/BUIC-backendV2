@@ -127,27 +127,35 @@ async function handleOrderCompleted(orderData, meta) {
         // Extract customer and plan info
         const customAttributes = meta?.custom_data || orderData.attributes?.custom_data || {};
         const enrollment = customAttributes.enrollment;
-        const customerEmail = orderData.attributes?.customer_email;
         const plan = customAttributes.plan || 'pro';
+
+        // Try multiple possible locations for customer email
+        let customerEmail = orderData.attributes?.customer_email || 
+                           orderData.attributes?.email ||
+                           orderData.customer_email ||
+                           orderData.email ||
+                           customAttributes.email;
+
+        console.log(`DEBUG fullOrderData:`, JSON.stringify(orderData, null, 2));
+        console.log(`DEBUG: Extracted email from: customerEmail="${customerEmail}"`);
 
         // ALWAYS store email for APK downloads (this is independent of enrollment)
         console.log(`DEBUG: customerEmail value = "${customerEmail}"`);
         console.log(`DEBUG: typeof customerEmail = ${typeof customerEmail}`);
-        console.log(`DEBUG: orderData.attributes keys:`, Object.keys(orderData.attributes || {}));
         
-        if (customerEmail) {
+        if (customerEmail && customerEmail.includes('@')) {
             try {
                 const docRef = await admin.firestore().collection('paid_orders').add({
                     email: customerEmail.toLowerCase().trim(),
                     order_id: String(orderData.id),
                     paid_at: new Date(),
                 });
-                console.log(`✓ SUCCESS: Stored paid_orders for email: ${customerEmail}, docID: ${docRef.id}`);
+                console.log(`✓✓✓ SUCCESS STORING EMAIL: ${customerEmail} to docID: ${docRef.id}`);
             } catch (fbError) {
-                console.error(`✗ FIREBASE ERROR storing email: ${fbError.message}`);
+                console.error(`✗✗✗ FIREBASE ERROR storing email: ${fbError.message}`);
             }
         } else {
-            console.warn(`✗ NO CUSTOMER EMAIL FOUND for order ${orderData.id} - email extraction failed`);
+            console.error(`✗✗✗ NO VALID CUSTOMER EMAIL FOUND for order ${orderData.id}. customerEmail="${customerEmail}"`);
         }
 
         // If we have enrollment, update students collection
