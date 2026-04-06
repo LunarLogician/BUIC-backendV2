@@ -147,9 +147,23 @@ app.get('/api/admin/payments', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
-    const snap = await db.collection('students').where('premium_paid', '==', true).get();
-    const results = snap.docs.map(d => ({ enrollment: d.id, ...d.data() }));
-    res.json(results);
+    // Query paid_orders collection for complete payment data
+    const snap = await db.collection('paid_orders').get();
+    const results = snap.docs.map(d => {
+      const data = d.data();
+      return {
+        id: d.id,
+        order_id: data.order_id,
+        email: data.email,
+        product: data.product,
+        amount: data.amount,
+        currency: data.currency,
+        paid_at: data.paid_at,
+        status: 'Submitted',
+        ...data
+      };
+    });
+    res.json(results.sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
