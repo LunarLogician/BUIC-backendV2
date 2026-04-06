@@ -169,6 +169,95 @@ app.get('/api/admin/payments', async (req, res) => {
   }
 });
 
+// ✅ NEW: Join payments with student enrollment data
+app.get('/api/admin/payments-with-enrollment', async (req, res) => {
+  if (req.headers['x-admin-secret'] !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    // Get all paid orders
+    const paidSnap = await db.collection('paid_orders').get();
+    const results = [];
+    
+    for (const paidDoc of paidSnap.docs) {
+      const paymentData = paidDoc.data();
+      const paymentWithId = {
+        order_id: paymentData.order_id,
+        email: paymentData.email,
+        product: paymentData.product,
+        amount: paymentData.amount,
+        currency: paymentData.currency,
+        paid_at: paymentData.paid_at,
+        status: 'Paid'
+      };
+      
+      // Try to find matching student/enrollment by order_id
+      const studentSnap = await db.collection('students')
+        .where('order_id', '==', String(paymentData.order_id))
+        .limit(1)
+        .get();
+      
+      if (!studentSnap.empty) {
+        const studentDoc = studentSnap.docs[0];
+        const studentData = studentDoc.data();
+        results.push({
+          ...paymentWithId,
+          enrollment: studentDoc.id,
+          premium_paid: studentData.premium_paid,
+          premiumExpiresAt: studentData.premiumExpiresAt,
+          premiumSince: studentData.premiumSince,
+          lastSeen: studentData.lastSeen,
+          attendance: studentData.attendance
+        });
+      } else {
+        results.push({
+          ...paymentWithId,
+          enrollment: 'Not Linked',
+          premium_paid: false,
+          premiumExpiresAt: null
+        });
+      }
+    }
+    
+    res.json(results.sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at)));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ NEW: Get device locks
+app.get('/api/admin/device-locks', async (req, res) => {
+  if (req.headers['x-admin-secret'] !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const snap = await db.collection('device_locks').get();
+    const results = [];
+    
+    snap.docs.forEach(doc => {
+      const data = doc.data();
+      const docId = doc.id; // email|enrollment format or direct key
+      
+      results.push({
+        id: docId,
+        email: data.email,
+        enrollment: docId.split('|')[1] || docId,
+        device_id: data.device_id,
+        deviceHash: data.deviceHash,
+        deviceName: data.deviceName,
+        downloadCount: data.downloadCount || 0,
+        lastDownload: data.lastDownload,
+        firstDownload: data.firstDownload,
+        role: data.role
+      });
+    });
+    
+    res.json(results.sort((a, b) => new Date(b.lastDownload) - new Date(a.lastDownload)));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/track-download', async (req, res) => {
   const { email, role, ts } = req.body || {};
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'invalid email' });
