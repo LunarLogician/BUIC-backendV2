@@ -264,27 +264,39 @@ app.post('/api/get-download-url', async (req, res) => {
 
     // Get server-side IP address (can't be spoofed by client)
     const clientIp = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    const userAgentHeader = req.headers['user-agent'] || 'MISSING_USER_AGENT';
     
-    // Create a unique device identifier: hash of IP + User-Agent + timestamp (not client-provided)
+    // Create a unique device identifier: hash of IP + User-Agent (not client-provided)
+    const signatureInput = `${clientIp}:${userAgentHeader}`;
     const serverDeviceSignature = crypto
       .createHash('sha256')
-      .update(`${clientIp}:${req.headers['user-agent']}`)
+      .update(signatureInput)
       .digest('hex');
+    
+    console.log(`\n🔐 DEVICE LOCK CHECK for ${normalizedEmail}/${normalizedRole}`);
+    console.log(`   Client IP: ${clientIp}`);
+    console.log(`   User-Agent: ${userAgentHeader.substring(0, 60)}`);
+    console.log(`   Signature: ${serverDeviceSignature}`);
 
     if (lockSnap.exists) {
       const lockData = lockSnap.data();
+      console.log(`   Lock EXISTS. Stored signature: ${lockData.serverDeviceSignature || 'NONE'}`);
+      console.log(`   Stored IP: ${lockData.clientIp || 'NONE'}`);
       
       // Device already registered - verify it matches
       // Use server-generated signature, not client deviceHash
       // Handle migration: if old lock doesn't have serverDeviceSignature, treat as new device
       const registeredSignature = lockData.serverDeviceSignature;
       
+      console.log(`   Checking signature match:`);
+      console.log(`     Registered: ${registeredSignature || 'NONE (old format lock)'}`);
+      console.log(`     Current:    ${serverDeviceSignature}`);
+      console.log(`     Match: ${registeredSignature === serverDeviceSignature ? '✅ YES' : '❌ NO'}`);
+      
       if (registeredSignature && registeredSignature !== serverDeviceSignature) {
-        console.warn(`❌ DEVICE MISMATCH: ${normalizedEmail}/${lockIdentifier}/${normalizedRole}`);
+        console.warn(`❌ DEVICE MISMATCH REJECTED: ${normalizedEmail}/${normalizedRole}`);
         console.warn(`   Registered device IP: ${lockData.clientIp || 'unknown'}`);
         console.warn(`   Attempted device IP: ${clientIp}`);
-        console.warn(`   Registered signature: ${registeredSignature.substring(0, 12)}...`);
-        console.warn(`   Attempted signature: ${serverDeviceSignature.substring(0, 12)}...`);
         return res.status(403).json({ 
           error: normalizedRole === 'student' 
             ? 'This enrollment is already registered on a different device. Contact support to transfer to a new device.'
@@ -295,13 +307,12 @@ app.post('/api/get-download-url', async (req, res) => {
       }
       
       if (registeredSignature) {
-        console.log(`✓ Download authorized (existing device) for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
+        console.log(`✅ ACCEPTED: Same device, download allowed`);
       } else {
-        console.log(`✓ Migrating old device lock to new format for ${normalizedEmail}/${normalizedRole}`);
+        console.log(`✅ MIGRATING: Old lock format, updating to new signature`);
       }
     } else {
-      // First download - register this device
-      console.log(`✓ Registering new device for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
+      console.log(`   Lock DOES NOT exist yet - first download`);
     }
 
     // 3️⃣ Update/create device lock with this combo
