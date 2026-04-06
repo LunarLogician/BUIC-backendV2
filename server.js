@@ -305,17 +305,32 @@ app.post('/api/get-download-url', async (req, res) => {
     }
 
     // 3️⃣ Update/create device lock with this combo
+    // IMPORTANT: Only SET device info on FIRST download. Lock it in place.
+    // On subsequent downloads, only increment counters - NEVER change device signature.
+    
+    const isFirstDownload = !lockSnap.exists;
+    
     const lockData = {
+      // Always update these on every download:
       email: normalizedEmail,
       role: normalizedRole,
-      deviceHash: deviceHash,                    // Keep for backwards compatibility
-      serverDeviceSignature: serverDeviceSignature,  // NEW: Server-generated, can't be spoofed
-      clientIp: clientIp,                         // NEW: Track IP
-      userAgent: req.headers['user-agent'],       // NEW: Track browser
-      firstDownload: lockSnap.exists ? lockSnap.data().firstDownload : new Date(),
       lastDownload: new Date(),
       downloadCount: admin.firestore.FieldValue.increment(1)
     };
+    
+    // ONLY set device info on FIRST DOWNLOAD - lock it in place forever:
+    if (isFirstDownload) {
+      lockData.deviceHash = deviceHash;                    // Keep for backwards compatibility
+      lockData.serverDeviceSignature = serverDeviceSignature;  // Lock this device!
+      lockData.clientIp = clientIp;                         // Lock this IP!
+      lockData.userAgent = req.headers['user-agent'];       // Lock this browser!
+      lockData.firstDownload = new Date();
+      console.log(`🔒 DEVICE LOCKED on first download: ${clientIp}`);
+    } else {
+      // SUBSEQUENT downloads - only update counters, preserve device info from first download
+      lockData.firstDownload = lockSnap.data().firstDownload;
+      console.log(`✓ Download allowed from already-registered device`);
+    }
     
     // Add enrollment only for students
     if (normalizedRole === 'student' && enrollment) {
@@ -324,7 +339,7 @@ app.post('/api/get-download-url', async (req, res) => {
     
     await db.collection('device_locks').doc(deviceLockId).set(lockData, { merge: true });
 
-    console.log(`📊 Device lock updated: ${deviceLockId.substring(0, 30)}...`);
+    console.log(`📊 Device lock status: ${deviceLockId.substring(0, 30)}...`);
 
     // 4️⃣ Generate signed download URL from Firebase Storage
     const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
