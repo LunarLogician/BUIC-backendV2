@@ -20,6 +20,7 @@ const app = express();
 // ─── CORS ─────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'https://bu-frontend-three.vercel.app',
+  'https://bu-frontend-muhammad-zubairs-projects-9d625f29.vercel.app',
   'https://bu-frontend-git-main-muhammad-zubairs-projects-9d625f29.vercel.app',
   'https://bubuddy.site',
   'https://www.bubuddy.site',
