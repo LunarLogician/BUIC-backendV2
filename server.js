@@ -3,6 +3,7 @@ const path = require('path');
 const admin = require('firebase-admin');
 const serverless = require('serverless-http');
 const cors = require('cors');
+const crypto = require('crypto');
 
 // Load environment variables from .env file
 require('dotenv').config();
@@ -261,33 +262,49 @@ app.post('/api/get-download-url', async (req, res) => {
     const deviceLockId = `${normalizedEmail}|${lockIdentifier}|${normalizedRole}`;
     const lockSnap = await db.collection('device_locks').doc(deviceLockId).get();
 
+    // Get server-side IP address (can't be spoofed by client)
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    
+    // Create a unique device identifier: hash of IP + User-Agent + timestamp (not client-provided)
+    const serverDeviceSignature = crypto
+      .createHash('sha256')
+      .update(`${clientIp}:${req.headers['user-agent']}`)
+      .digest('hex');
+
     if (lockSnap.exists) {
       const lockData = lockSnap.data();
       
       // Device already registered - verify it matches
-      if (lockData.deviceHash !== deviceHash) {
+      // Use server-generated signature, not client deviceHash
+      if (lockData.serverDeviceSignature !== serverDeviceSignature) {
         console.warn(`❌ DEVICE MISMATCH: ${normalizedEmail}/${lockIdentifier}/${normalizedRole}`);
-        console.warn(`   Registered device: ${lockData.deviceHash.substring(0, 8)}...`);
-        console.warn(`   Attempted device: ${deviceHash.substring(0, 8)}...`);
+        console.warn(`   Registered device IP: ${lockData.clientIp}`);
+        console.warn(`   Attempted device IP: ${clientIp}`);
+        console.warn(`   Registered signature: ${lockData.serverDeviceSignature.substring(0, 12)}...`);
+        console.warn(`   Attempted signature: ${serverDeviceSignature.substring(0, 12)}...`);
         return res.status(403).json({ 
           error: normalizedRole === 'student' 
             ? 'This enrollment is already registered on a different device. Contact support to transfer to a new device.'
             : 'This account is already registered on a different device. Contact support to transfer to a new device.',
-          registered_device: lockData.deviceHash.substring(0, 12)
+          registered_device: lockData.clientIp,
+          current_device: clientIp
         });
       }
       
-      console.log(`✓ Download authorized (existing device) for ${normalizedEmail}/${normalizedRole}`);
+      console.log(`✓ Download authorized (existing device) for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
     } else {
       // First download - register this device
-      console.log(`✓ Registering new device for ${normalizedEmail}/${normalizedRole}`);
+      console.log(`✓ Registering new device for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
     }
 
     // 3️⃣ Update/create device lock with this combo
     const lockData = {
       email: normalizedEmail,
       role: normalizedRole,
-      deviceHash: deviceHash,
+      deviceHash: deviceHash,                    // Keep for backwards compatibility
+      serverDeviceSignature: serverDeviceSignature,  // NEW: Server-generated, can't be spoofed
+      clientIp: clientIp,                         // NEW: Track IP
+      userAgent: req.headers['user-agent'],       // NEW: Track browser
       firstDownload: lockSnap.exists ? lockSnap.data().firstDownload : new Date(),
       lastDownload: new Date(),
       downloadCount: admin.firestore.FieldValue.increment(1)
