@@ -276,22 +276,29 @@ app.post('/api/get-download-url', async (req, res) => {
       
       // Device already registered - verify it matches
       // Use server-generated signature, not client deviceHash
-      if (lockData.serverDeviceSignature !== serverDeviceSignature) {
+      // Handle migration: if old lock doesn't have serverDeviceSignature, treat as new device
+      const registeredSignature = lockData.serverDeviceSignature;
+      
+      if (registeredSignature && registeredSignature !== serverDeviceSignature) {
         console.warn(`❌ DEVICE MISMATCH: ${normalizedEmail}/${lockIdentifier}/${normalizedRole}`);
-        console.warn(`   Registered device IP: ${lockData.clientIp}`);
+        console.warn(`   Registered device IP: ${lockData.clientIp || 'unknown'}`);
         console.warn(`   Attempted device IP: ${clientIp}`);
-        console.warn(`   Registered signature: ${lockData.serverDeviceSignature.substring(0, 12)}...`);
+        console.warn(`   Registered signature: ${registeredSignature.substring(0, 12)}...`);
         console.warn(`   Attempted signature: ${serverDeviceSignature.substring(0, 12)}...`);
         return res.status(403).json({ 
           error: normalizedRole === 'student' 
             ? 'This enrollment is already registered on a different device. Contact support to transfer to a new device.'
             : 'This account is already registered on a different device. Contact support to transfer to a new device.',
-          registered_device: lockData.clientIp,
+          registered_device: lockData.clientIp || 'unknown',
           current_device: clientIp
         });
       }
       
-      console.log(`✓ Download authorized (existing device) for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
+      if (registeredSignature) {
+        console.log(`✓ Download authorized (existing device) for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
+      } else {
+        console.log(`✓ Migrating old device lock to new format for ${normalizedEmail}/${normalizedRole}`);
+      }
     } else {
       // First download - register this device
       console.log(`✓ Registering new device for ${normalizedEmail}/${normalizedRole} from IP: ${clientIp}`);
