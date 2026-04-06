@@ -276,6 +276,25 @@ async function handleOrderCompleted(orderData, meta) {
 }
 
 /**
+ * Calculate subscription expiry date (30 days from now or from Lemonsqueezy renewal date)
+ */
+function calculateSubscriptionExpiry(subscriptionData) {
+    // Check if Lemonsqueezy provides a renewal date
+    const renewsAt = subscriptionData?.attributes?.renews_at || subscriptionData?.attributes?.next_billing_date;
+    
+    if (renewsAt) {
+        console.log(`📅 Using Lemonsqueezy renewal date: ${renewsAt}`);
+        return new Date(renewsAt).toISOString();
+    }
+    
+    // Default: 30 days from now
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30);
+    console.log(`📅 Calculated 30-day expiry: ${expiryDate.toISOString()}`);
+    return expiryDate.toISOString();
+}
+
+/**
  * Handle subscription events (recurring payments)
  */
 async function handleSubscriptionEvent(subscriptionData, meta) {
@@ -292,17 +311,23 @@ async function handleSubscriptionEvent(subscriptionData, meta) {
         }
 
         const status = subscriptionData.attributes?.status;
+        const expiryDate = calculateSubscriptionExpiry(subscriptionData);
+        const verifiedAt = new Date().toISOString();
 
-        // Update Firestore subscription status
+        // Update Firestore subscription status with expiry tracking
         await admin.firestore().collection('students').doc(enrollment).set({
             subscription_id: subscriptionData.id,
             subscription_status: status,
             premium_paid: ['active', 'paused'].includes(status),
             premium_plan: plan,
+            premium_expires_at: expiryDate,
+            payment_verified_at: verifiedAt,
             subscription_updated_date: new Date()
         }, { merge: true });
 
-        console.log(`✓ Updated Firestore subscription for enrollment: ${enrollment}`);
+        console.log(`✅ Updated Firestore subscription for enrollment: ${enrollment}`);
+        console.log(`   ✓ premium_expires_at: ${expiryDate}`);
+        console.log(`   ✓ payment_verified_at: ${verifiedAt}`);
 
         // Send confirmation if newly activated
         if (status === 'active' && subscriptionData.attributes?.customer_email) {
@@ -331,13 +356,20 @@ async function handleSubscriptionResumed(subscriptionData, meta) {
 
         if (!enrollment) return;
 
+        const expiryDate = calculateSubscriptionExpiry(subscriptionData);
+        const verifiedAt = new Date().toISOString();
+
         await admin.firestore().collection('students').doc(enrollment).set({
             premium_paid: true,
             subscription_status: 'active',
+            premium_expires_at: expiryDate,
+            payment_verified_at: verifiedAt,
             subscription_resumed_date: new Date()
         }, { merge: true });
 
-        console.log(`✓ Subscription resumed for enrollment: ${enrollment}`);
+        console.log(`✅ Subscription resumed for enrollment: ${enrollment}`);
+        console.log(`   ✓ premium_expires_at: ${expiryDate}`);
+        console.log(`   ✓ payment_verified_at: ${verifiedAt}`);
     } catch (error) {
         console.error('Error handling subscription resumption:', error);
         throw error;
@@ -356,13 +388,19 @@ async function handleSubscriptionCancelled(subscriptionData, meta) {
 
         if (!enrollment) return;
 
+        // Set expiry date to now when cancelled
+        const now = new Date().toISOString();
+
         await admin.firestore().collection('students').doc(enrollment).set({
             premium_paid: false,
             subscription_status: subscriptionData.attributes?.status,
+            premium_expires_at: now,
             subscription_ended_date: new Date()
         }, { merge: true });
 
-        console.log(`✓ Subscription cancelled for enrollment: ${enrollment}`);
+        console.log(`✅ Subscription cancelled for enrollment: ${enrollment}`);
+        console.log(`   ✓ premium_paid set to: false`);
+        console.log(`   ✓ premium_expires_at set to: ${now}`);
     } catch (error) {
         console.error('Error handling subscription cancellation:', error);
         throw error;
