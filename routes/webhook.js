@@ -681,4 +681,207 @@ function generateSubscriptionEmailHTML(apkConfig, plan, downloadUrl, enrollment)
     `;
 }
 
+// ───── Admin Endpoints ─────
+// Middleware to verify admin secret
+function verifyAdminSecret(req, res, next) {
+    const adminSecret = req.headers['x-admin-secret'];
+    const expectedSecret = process.env.ADMIN_SECRET || 'dev-admin-secret';
+    
+    if (!adminSecret || adminSecret !== expectedSecret) {
+        console.warn('🚫 Admin access denied - invalid secret');
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+    next();
+}
+
+/**
+ * POST /api/admin/set-premium
+ * Manually activate premium for an enrollment (for testing/manual fixes)
+ * 
+ * Body: { enrollment, expiryDays: 30 }
+ * Headers: { x-admin-secret: "..." }
+ */
+router.post('/api/admin/set-premium', verifyAdminSecret, async (req, res) => {
+    try {
+        const { enrollment, expiryDays = 30, plan = 'pro' } = req.body;
+        
+        if (!enrollment) {
+            return res.status(400).json({ error: 'Missing enrollment' });
+        }
+
+        const now = new Date();
+        const expiryDate = new Date(now);
+        expiryDate.setDate(expiryDate.getDate() + expiryDays);
+
+        await admin.firestore().collection('students').doc(enrollment).set({
+            premium_paid: true,
+            premium_plan: plan,
+            premium_expires_at: expiryDate.toISOString(),
+            payment_verified_at: now.toISOString(),
+            manually_set_by_admin: true,
+            admin_set_date: now.toISOString()
+        }, { merge: true });
+
+        console.log(`\n✅ ════════════════════════════════════════════════════════════════════════════`);
+        console.log('🔓 ADMIN: Premium Manually Activated');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log(`📧 Enrollment: ${enrollment}`);
+        console.log(`💰 Plan: ${plan}`);
+        console.log(`📅 Expires: ${expiryDate.toISOString()}`);
+        console.log(`⏱️  Days: ${expiryDays}`);
+        console.log('════════════════════════════════════════════════════════════════════════════\n');
+
+        res.json({
+            success: true,
+            enrollment,
+            premium_paid: true,
+            premium_expires_at: expiryDate.toISOString(),
+            expires_in_days: expiryDays
+        });
+    } catch (error) {
+        console.error('❌ Admin set-premium error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/check-premium/:enrollment
+ * Check premium status for an enrollment
+ */
+router.get('/api/admin/check-premium/:enrollment', verifyAdminSecret, async (req, res) => {
+    try {
+        const { enrollment } = req.params;
+        
+        const doc = await admin.firestore().collection('students').doc(enrollment).get();
+        
+        if (!doc.exists) {
+            return res.status(404).json({ error: 'Enrollment not found' });
+        }
+
+        const data = doc.data();
+        const expiryDate = data.premium_expires_at ? new Date(data.premium_expires_at) : null;
+        const now = new Date();
+        const daysRemaining = expiryDate ? Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24)) : null;
+        const isExpired = expiryDate && expiryDate < now;
+
+        console.log(`\n🔍 ════════════════════════════════════════════════════════════════════════════`);
+        console.log('📋 ADMIN: Check Premium Status');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log(`📧 Enrollment: ${enrollment}`);
+        console.log(`💰 Premium Paid: ${data.premium_paid}`);
+        console.log(`📅 Expires At: ${data.premium_expires_at || 'N/A'}`);
+        console.log(`⏱️  Days Remaining: ${daysRemaining !== null ? daysRemaining : 'N/A'}`);
+        console.log(`⚠️  Expired: ${isExpired}`);
+        console.log('════════════════════════════════════════════════════════════════════════════\n');
+
+        res.json({
+            enrollment,
+            premium_paid: data.premium_paid || false,
+            premium_plan: data.premium_plan || 'none',
+            premium_expires_at: data.premium_expires_at,
+            payment_verified_at: data.payment_verified_at,
+            subscription_status: data.subscription_status || 'none',
+            days_remaining: daysRemaining,
+            is_expired: isExpired,
+            verified_at: data.payment_verified_at
+        });
+    } catch (error) {
+        console.error('❌ Admin check-premium error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/revoke-premium
+ * Manually revoke premium for an enrollment
+ */
+router.post('/api/admin/revoke-premium', verifyAdminSecret, async (req, res) => {
+    try {
+        const { enrollment } = req.body;
+        
+        if (!enrollment) {
+            return res.status(400).json({ error: 'Missing enrollment' });
+        }
+
+        const now = new Date();
+
+        await admin.firestore().collection('students').doc(enrollment).set({
+            premium_paid: false,
+            premium_expires_at: now.toISOString(),
+            subscription_revoked_by_admin: true,
+            admin_revoke_date: now.toISOString()
+        }, { merge: true });
+
+        console.log(`\n✅ ════════════════════════════════════════════════════════════════════════════`);
+        console.log('🔓 ADMIN: Premium Manually Revoked');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log(`📧 Enrollment: ${enrollment}`);
+        console.log(`❌ Premium Paid: false`);
+        console.log(`📅 Revoked At: ${now.toISOString()}`);
+        console.log('════════════════════════════════════════════════════════════════════════════\n');
+
+        res.json({
+            success: true,
+            enrollment,
+            premium_paid: false,
+            premium_expires_at: now.toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Admin revoke-premium error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/extend-expiry
+ * Extend expiry date for an enrollment
+ */
+router.post('/api/admin/extend-expiry', verifyAdminSecret, async (req, res) => {
+    try {
+        const { enrollment, days = 30 } = req.body;
+        
+        if (!enrollment) {
+            return res.status(400).json({ error: 'Missing enrollment' });
+        }
+
+        // Get current expiry if exists
+        const doc = await admin.firestore().collection('students').doc(enrollment).get();
+        let currentExpiry = new Date();
+        
+        if (doc.exists && doc.data().premium_expires_at) {
+            currentExpiry = new Date(doc.data().premium_expires_at);
+        }
+
+        // Add days to current expiry
+        const newExpiry = new Date(currentExpiry);
+        newExpiry.setDate(newExpiry.getDate() + days);
+
+        await admin.firestore().collection('students').doc(enrollment).set({
+            premium_expires_at: newExpiry.toISOString(),
+            admin_extended_date: new Date().toISOString(),
+            admin_extended_days: days
+        }, { merge: true });
+
+        console.log(`\n✅ ════════════════════════════════════════════════════════════════════════════`);
+        console.log('🔓 ADMIN: Expiry Extended');
+        console.log('════════════════════════════════════════════════════════════════════════════');
+        console.log(`📧 Enrollment: ${enrollment}`);
+        console.log(`📅 Old Expiry: ${currentExpiry.toISOString()}`);
+        console.log(`📅 New Expiry: ${newExpiry.toISOString()}`);
+        console.log(`➕ Days Added: ${days}`);
+        console.log('════════════════════════════════════════════════════════════════════════════\n');
+
+        res.json({
+            success: true,
+            enrollment,
+            old_expiry: currentExpiry.toISOString(),
+            new_expiry: newExpiry.toISOString(),
+            days_added: days
+        });
+    } catch (error) {
+        console.error('❌ Admin extend-expiry error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
