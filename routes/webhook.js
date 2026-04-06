@@ -236,10 +236,14 @@ async function handleOrderCompleted(orderData, meta) {
       orderData?.data?.attributes?.customer_email ||
       orderData?.relationships?.customer?.data?.attributes?.email;
     
-    console.log('🔎 Attempting email extraction:');
-    console.log('   orderData.attributes?.user_email:', orderData?.attributes?.user_email);
-    console.log('   orderData.attributes?.customer_email:', orderData?.attributes?.customer_email);
-    console.log('   Final email:', customerEmail);
+    // Extract enrollment ID from custom data sent during checkout
+    const customData = orderData?.attributes?.custom_data || meta?.custom_data || {};
+    const enrollment = customData.enrollment || customData.user_enrollment;
+    
+    console.log('🔎 Attempting data extraction:');
+    console.log('   Email:', customerEmail);
+    console.log('   Enrollment ID:', enrollment);
+    console.log('   Custom Data:', customData);
     
     if (!customerEmail) {
       console.warn('⚠️ No email found in order', orderData.id);
@@ -250,6 +254,7 @@ async function handleOrderCompleted(orderData, meta) {
     console.log('💰 ORDER COMPLETED');
     console.log('════════════════════════════════════════════════════════════════════════════');
     console.log('📧 Customer Email:', customerEmail);
+    console.log('🎓 Enrollment ID:', enrollment || 'Not provided');
     console.log('🆔 Order ID:', orderData.id);
     console.log('💵 Amount:', orderData.attributes?.total || 'N/A');
     console.log('💱 Currency:', orderData.attributes?.currency || 'N/A');
@@ -267,8 +272,33 @@ async function handleOrderCompleted(orderData, meta) {
       paid_at: new Date(),
     }, { merge: true });
 
-    console.log('✅ Payment recorded for', customerEmail);
-    console.log('📝 Document added to paid_orders collection with order ID:', orderData.id, '\n');
+    console.log('✅ Payment recorded in paid_orders for', customerEmail);
+    console.log('📝 Document added to paid_orders collection with order ID:', orderData.id);
+
+    // ✅ NEW: If enrollment ID provided, also write to students/{enrollment}
+    if (enrollment) {
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + 30);
+      
+      await admin.firestore().collection('students').doc(enrollment).set({
+        premium_paid: true,
+        premiumSince: admin.firestore.FieldValue.serverTimestamp(),
+        premiumExpiresAt: admin.firestore.Timestamp.fromDate(expiryDate),
+        payment_verified_at: new Date().toISOString(),
+        order_id: String(orderData.id),
+        email: customerEmail.toLowerCase().trim(),
+      }, { merge: true });
+
+      console.log('✅ Payment UNLOCKED for enrollment:', enrollment);
+      console.log('   ✓ premium_paid: true');
+      console.log('   ✓ premiumExpiresAt:', expiryDate.toISOString());
+      console.log('   ✓ order_id:', orderData.id);
+    } else {
+      console.warn('⚠️ No enrollment ID in order - payment recorded but NOT linked to student account');
+      console.warn('   App will NOT recognize payment. User must provide enrollment manually.');
+    }
+
+    console.log('\n');
   } catch (error) {
     console.error('❌ Error handling order:', error);
     throw error;
@@ -713,14 +743,20 @@ router.post('/api/admin/set-premium', verifyAdminSecret, async (req, res) => {
         const expiryDate = new Date(now);
         expiryDate.setDate(expiryDate.getDate() + expiryDays);
 
-        await admin.firestore().collection('students').doc(enrollment).set({
+        const updateData = {
             premium_paid: true,
             premium_plan: plan,
             premium_expires_at: expiryDate.toISOString(),
             payment_verified_at: now.toISOString(),
             manually_set_by_admin: true,
             admin_set_date: now.toISOString()
-        }, { merge: true });
+        };
+
+        console.log(`\n📝 Writing to Firestore:`, updateData);
+        
+        const writeResult = await admin.firestore().collection('students').doc(enrollment).set(updateData, { merge: true });
+        
+        console.log(`✅ Firestore write successful`, writeResult);
 
         console.log(`\n✅ ════════════════════════════════════════════════════════════════════════════`);
         console.log('🔓 ADMIN: Premium Manually Activated');
@@ -739,7 +775,8 @@ router.post('/api/admin/set-premium', verifyAdminSecret, async (req, res) => {
             expires_in_days: expiryDays
         });
     } catch (error) {
-        console.error('❌ Admin set-premium error:', error);
+        console.error('❌ Admin set-premium error:', error.message);
+        console.error('Stack:', error.stack);
         res.status(500).json({ error: error.message });
     }
 });
