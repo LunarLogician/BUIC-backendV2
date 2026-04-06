@@ -20,9 +20,12 @@ const app = express();
 // ─── CORS ─────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'https://bu-frontend-three.vercel.app',
+  'https://bu-frontend-git-main-muhammad-zubairs-projects-9d625f29.vercel.app',
+  'https://bubuddy.site',
+  'https://www.bubuddy.site',
   'http://localhost:3000',
   'http://localhost:5500',
-  'https://www.bubuddy.site'
+  'http://localhost:8000'
 ];
 app.use(cors({
   origin: (origin, callback) => {
