@@ -257,9 +257,9 @@ app.post('/api/get-download-url', async (req, res) => {
     }
 
     // 2️⃣ Check if device lock exists for this combo
-    // For students: lock by enrollment, for others: lock by email
-    const lockIdentifier = normalizedRole === 'student' ? enrollment : normalizedEmail;
-    const deviceLockId = `${normalizedEmail}|${lockIdentifier}|${normalizedRole}`;
+    // IMPORTANT: Lock by EMAIL+ROLE only - one device per person, regardless of enrollment
+    // This prevents account sharing across different courses/enrollments
+    const deviceLockId = `${normalizedEmail}|${normalizedRole}`;
     const lockSnap = await db.collection('device_locks').doc(deviceLockId).get();
 
     // Get server-side IP address (can't be spoofed by client)
