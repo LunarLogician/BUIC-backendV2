@@ -274,7 +274,7 @@ app.post('/api/track-download', async (req, res) => {
   
   try {
     // ONLY store to analytics, NOT to paid_orders
-    await db.collection('download_leads').add({
+    await db.collection('download_leads').doc(email).set({
       email,
       role: role || 'unknown',
       ts: new Date().toISOString(),
